@@ -15,25 +15,25 @@ import (
 	"github.com/chxlky/trello-gcal-sync/database"
 	"github.com/chxlky/trello-gcal-sync/integrations"
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
 )
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("Error loading .env file - relying on host environment variables")
+	viper.SetConfigName("config")
+	viper.SetConfigType("toml")
+	viper.AddConfigPath(".")
+	if err := viper.ReadInConfig(); err != nil {
+		log.Fatalf("FATAL: Error reading config file: %v", err)
 	}
 
-	viper.AutomaticEnv()
-
-	dbPath := viper.GetString("DB_PATH")
+	dbPath := viper.GetString("database.path")
 	if dbPath == "" {
 		dbPath = "cards.db"
 	}
 	db := database.Init(dbPath)
 	sqlDB, _ := db.DB()
 
-	port := viper.GetString("SERVER_PORT")
+	port := viper.GetString("server.port")
 	if port == "" {
 		port = "8080"
 	}
@@ -62,14 +62,14 @@ func main() {
 	time.Sleep(250 * time.Millisecond)
 
 	trelloClient := integrations.NewTrelloClient(
-		viper.GetString("TRELLO_API_KEY"),
-		viper.GetString("TRELLO_API_TOKEN"),
-		viper.GetString("TRELLO_CALLBACK_URL"),
+		viper.GetString("trello.api_key"),
+		viper.GetString("trello.api_token"),
+		viper.GetString("trello.callback_url"),
 	)
 
 	log.Println("Registering Trello webhook...")
 
-	boardId := viper.GetString("TRELLO_BOARD_ID")
+	boardId := viper.GetString("trello.board_id")
 	webhookID, err := trelloClient.RegisterWebhook(boardId)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to register webhook on startup: %v", err)
