@@ -73,7 +73,7 @@ func (tc *TrelloClient) DeleteWebhook(webhookID string) error {
 	formData.Set("key", tc.APIKey)
 	formData.Set("token", tc.APIToken)
 
-	req, err := http.NewRequest("DELETE", apiURL, bytes.NewBufferString(formData.Encode()))
+	req, err := http.NewRequest("DELETE", apiURL+"?"+formData.Encode(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create delete request: %v", err)
 	}
@@ -90,6 +90,6 @@ func (tc *TrelloClient) DeleteWebhook(webhookID string) error {
 	}
 
 	log.Printf("Successfully deleted webhook with ID: %s\n", webhookID)
-	
+
 	return nil
 }

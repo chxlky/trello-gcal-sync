@@ -2,15 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/chxlky/trello-gcal-sync/api"
 	"github.com/chxlky/trello-gcal-sync/database"
 	"github.com/chxlky/trello-gcal-sync/integrations"
+	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
 )
@@ -21,6 +25,41 @@ func main() {
 	}
 
 	viper.AutomaticEnv()
+
+	dbPath := viper.GetString("DB_PATH")
+	if dbPath == "" {
+		dbPath = "cards.db"
+	}
+	db := database.Init(dbPath)
+	sqlDB, _ := db.DB()
+
+	port := viper.GetString("SERVER_PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	router := gin.Default()
+	apiHandler := &api.Handler{DB: db}
+	apiGroup := router.Group("/api")
+	{
+		apiGroup.POST("/trello-webhook", apiHandler.TrelloWebhookHandler)
+		apiGroup.HEAD("/trello-webhook", apiHandler.TrelloWebhookHandler)
+	}
+
+	srv := &http.Server{
+		Addr:   ":" + port,
+		Handler: router,
+	}
+
+	log.Printf("Starting server on port %s...\n", port)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("FATAL: Server error: %v", err)
+		}
+	}()
+
+	// Give the server a moment to start
+	time.Sleep(250 * time.Millisecond)
 
 	trelloClient := integrations.NewTrelloClient(
 		viper.GetString("TRELLO_API_KEY"),
@@ -37,18 +76,6 @@ func main() {
 	}
 	log.Printf("Successfully registered webhook with ID: %s\n", webhookID)
 
-	dbPath := viper.GetString("DB_PATH")
-	if dbPath == "" {
-		dbPath = "cards.db"
-	}
-	db := database.Init(dbPath)
-	sqlDB, _ := db.DB()
-
-	port := viper.GetString("SERVER_PORT")
-	if port == "" {
-		port = "8080"
-	}
-
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
@@ -58,8 +85,15 @@ func main() {
 	cleanup := func(reason string) {
 		log.Printf("Shutdown initiated (%s). Beginning cleanup\n", reason)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
+		log.Println("Shutting down HTTP server...")
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("Error shutting down server: %v\n", err)
+		} else {
+			log.Println("HTTP server shut down gracefully.")
+		}
 
 		delErr := trelloClient.DeleteWebhook(webhookID)
 		if delErr != nil {
@@ -74,12 +108,6 @@ func main() {
 			} else {
 				log.Println("Database connection closed.")
 			}
-		}
-
-		select {
-		case <-ctx.Done():
-			// timeout or completed
-		default:
 		}
 		close(done)
 	}
@@ -97,8 +125,6 @@ func main() {
 			os.Exit(1)
 		}()
 	}()
-
-	log.Printf("Starting server on port %s...\n", port)
 
 	<-done
 	log.Println("Exiting...")
