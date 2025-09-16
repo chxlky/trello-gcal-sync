@@ -57,6 +57,12 @@ func (h *Handler) processCardUpdate(payload models.TrelloWebhookPayload) error {
 	}
 
 	incomingCardData := payload.Action.Data.Card
+
+	if incomingCardData.ID == "" {
+		log.Printf("incoming card data does not contain an ID, skipping sync\n")
+		return nil
+	}
+
 	boardName := payload.Action.Data.Board.Name
 	boardID := payload.Action.Data.Board.ID
 	var card models.Card
@@ -66,14 +72,58 @@ func (h *Handler) processCardUpdate(payload models.TrelloWebhookPayload) error {
 		return fmt.Errorf("database query failed: %w", err)
 	}
 
-	// Decide whether to sync an event or delete one based on the due date
-	if incomingCardData.Due != "" {
-		if err := h.syncCalendarEvent(&card, incomingCardData, boardName, boardID); err != nil {
-			return err
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		log.Printf("Card %s not found in database; creating new record\n", incomingCardData.ID)
+	}
+
+	// Handle archiving
+	wasArchived := card.Archived
+	if incomingCardData.Closed {
+		if !wasArchived {
+			log.Printf("Card %s (%s) has been archived\n", incomingCardData.ID, incomingCardData.Name)
+		}
+		card.Archived = true
+
+		if card.EventID != "" {
+			if err := h.CalClient.DeleteEvent(card.EventID); err != nil {
+				log.Printf("Warning: failed to delete event from Google Calendar for archived card: %v\n", err)
+			}
+			// Clear the event ID since it's deleted
+			card.EventID = ""
 		}
 	} else {
-		if err := h.deleteCalendarEvent(&card); err != nil {
-			return err
+		if wasArchived {
+			log.Printf("Card %s (%s) has been unarchived\n", incomingCardData.ID, incomingCardData.Name)
+		}
+		card.Archived = false
+	}
+
+	// Skip sync for archived cards
+	if card.Archived {
+		log.Printf("Skipping further sync for archived card %s\n", incomingCardData.ID)
+	} else {
+		// Decide whether to sync an event or delete one based on the due date
+		if incomingCardData.Due != "" {
+			if err := h.syncCalendarEvent(&card, incomingCardData, boardName, boardID); err != nil {
+				return err
+			}
+		} else {
+			if card.DueDate != nil && card.EventID == "" {
+				// Recreate event using DB due date
+				log.Printf("Card %s has due date in DB but no event, recreating event\n", card.ID)
+				// Create a copy of incoming with the DB due date
+				recreateIncoming := incomingCardData
+				recreateIncoming.Due = card.DueDate.Format(time.RFC3339)
+				if err := h.syncCalendarEvent(&card, recreateIncoming, boardName, boardID); err != nil {
+					return err
+				}
+			} else if card.DueDate != nil && card.EventID != "" {
+				log.Printf("Card %s has due date in DB, keeping existing event\n", card.ID)
+			} else {
+				if err := h.deleteCalendarEvent(&card); err != nil {
+					return err
+				}
+			}
 		}
 	}
 
@@ -85,6 +135,11 @@ func (h *Handler) processCardUpdate(payload models.TrelloWebhookPayload) error {
 }
 
 func (h *Handler) syncCalendarEvent(card *models.Card, incoming models.TrelloCardData, boardName string, boardID string) error {
+	if card.Archived {
+		log.Printf("Skipping event sync for archived card %s\n", card.ID)
+		return nil
+	}
+
 	newDueDate, err := time.Parse(time.RFC3339, incoming.Due)
 	if err != nil {
 		return fmt.Errorf("invalid due date format: %w", err)

@@ -8,6 +8,7 @@ type Card struct {
 	DueDate   *time.Time
 	URL       string
 	BoardID   string
+	Archived  bool `gorm:"default:false"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	EventID   string // Google Calendar Event ID

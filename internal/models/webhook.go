@@ -5,6 +5,7 @@ type TrelloCardData struct {
 	Name      string `json:"name"`
 	Due       string `json:"due"`
 	ShortLink string `json:"shortLink"`
+	Closed    bool   `json:"closed"`
 }
 
 type TrelloBoardData struct {
