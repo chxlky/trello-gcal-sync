@@ -6,13 +6,15 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/chxlky/trello-gcal-sync/integrations"
 	"github.com/chxlky/trello-gcal-sync/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 type Handler struct {
-	DB *gorm.DB
+	DB        *gorm.DB
+	CalClient *integrations.CalendarClient
 }
 
 func (h *Handler) TrelloWebhookHandler(c *gin.Context) {
@@ -56,8 +58,15 @@ func (h *Handler) TrelloWebhookHandler(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save card"})
 			return
 		}
-
 		log.Printf("Card saved/updated: ID=%s, Name=%s, DueDate=%s\n", card.ID, card.Name, card.DueDate)
+
+		event, err := h.CalClient.CreateEventFromCard(card)
+		if err != nil {
+			log.Printf("Error creating calendar event from card: %v\n", err)
+		} else {
+			log.Printf("Created calendar event: ID=%s, Summary=%s, Link=%s\n", event.Id, event.Summary, event.HtmlLink)
+		}
+
 		c.JSON(http.StatusOK, gin.H{"message": "Card saved/updated successfully"})
 		return
 	}

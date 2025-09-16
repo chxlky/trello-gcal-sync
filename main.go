@@ -38,8 +38,17 @@ func main() {
 		port = "8080"
 	}
 
+	calClient, err := integrations.NewCalendarClient()
+	if err != nil {
+		log.Fatalf("FATAL: Failed to initialize Google Calendar client: %v", err)
+	}
+	log.Println("Successfully authenticated with Google Calendar API.")
+
 	router := gin.Default()
-	apiHandler := &api.Handler{DB: db}
+	apiHandler := &api.Handler{
+		DB:        db,
+		CalClient: calClient,
+	}
 	apiGroup := router.Group("/api")
 	{
 		apiGroup.POST("/trello-webhook", apiHandler.TrelloWebhookHandler)
@@ -47,7 +56,7 @@ func main() {
 	}
 
 	srv := &http.Server{
-		Addr:   ":" + port,
+		Addr:    ":" + port,
 		Handler: router,
 	}
 
