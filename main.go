@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -14,16 +14,45 @@ import (
 	"github.com/chxlky/trello-gcal-sync/api"
 	"github.com/chxlky/trello-gcal-sync/database"
 	"github.com/chxlky/trello-gcal-sync/integrations"
+	ginzap "github.com/gin-contrib/zap"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func main() {
+	levelStr := strings.ToLower(os.Getenv("LOG_LEVEL"))
+	if levelStr == "" {
+		levelStr = "debug"
+	}
+	level, err := zapcore.ParseLevel(levelStr)
+	if err != nil {
+		level = zapcore.InfoLevel
+	}
+
+	encoderConfig := zap.NewDevelopmentEncoderConfig()
+	encoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+
+	config := zap.Config{
+		Level:            zap.NewAtomicLevelAt(level),
+		Development:      true,
+		Encoding:         "console",
+		EncoderConfig:    encoderConfig,
+		OutputPaths:      []string{"stdout"},
+		ErrorOutputPaths: []string{"stderr"},
+	}
+
+	logger, _ := config.Build()
+	defer logger.Sync()
+	zap.ReplaceGlobals(logger)
+
 	viper.SetConfigName("config")
 	viper.SetConfigType("toml")
 	viper.AddConfigPath(".")
 	if err := viper.ReadInConfig(); err != nil {
-		log.Fatalf("FATAL: Error reading config file: %v", err)
+		zap.L().Fatal("Error reading config file", zap.Error(err))
 	}
 
 	dbPath := viper.GetString("database.path")
@@ -40,11 +69,14 @@ func main() {
 
 	calClient, err := integrations.NewCalendarClient()
 	if err != nil {
-		log.Fatalf("FATAL: Failed to initialize Google Calendar client: %v", err)
+		zap.L().Fatal("Failed to initialize Google Calendar client", zap.Error(err))
 	}
-	log.Println("Successfully authenticated with Google Calendar API.")
+	zap.L().Info("Successfully authenticated with Google Calendar API.")
 
 	router := gin.Default()
+	router.Use(ginzap.Ginzap(logger, time.RFC3339, true))
+	router.Use(ginzap.RecoveryWithZap(logger, true))
+
 	apiHandler := &api.Handler{
 		DB:        db,
 		CalClient: calClient,
@@ -60,10 +92,10 @@ func main() {
 		Handler: router,
 	}
 
-	log.Printf("Starting server on port %s...\n", port)
+	zap.L().Info("Starting server", zap.String("port", port))
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("FATAL: Server error: %v", err)
+			zap.L().Fatal("Server error", zap.Error(err))
 		}
 	}()
 
@@ -78,16 +110,16 @@ func main() {
 
 	var boardIDs []string
 	if err := viper.UnmarshalKey("trello.board_ids", &boardIDs); err != nil || len(boardIDs) == 0 {
-		log.Fatalf("FATAL: trello.board_ids is not configured properly: %v", err)
+		zap.L().Fatal("trello.board_ids is not configured properly", zap.Error(err))
 	}
 
-	log.Println("Registering Trello webhook for boards: ", boardIDs)
+	zap.L().Info("Registering Trello webhook for boards", zap.Strings("boardIDs", boardIDs))
 
 	webhookIDs := make(map[string]string)
 	for _, boardId := range boardIDs {
 		webhookID, err := trelloClient.RegisterWebhook(boardId)
 		if err != nil {
-			log.Fatalf("FATAL: Failed to register webhook on startup for board %s: %v", boardId, err)
+			zap.L().Fatal("Failed to register webhook on startup for board", zap.String("boardID", boardId), zap.Error(err))
 		}
 		webhookIDs[boardId] = webhookID
 	}
@@ -99,31 +131,31 @@ func main() {
 	var once sync.Once
 
 	cleanup := func(reason string) {
-		log.Printf("Shutdown initiated (%s). Beginning cleanup\n", reason)
+		zap.L().Info("Shutdown initiated", zap.String("reason", reason))
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		log.Println("Shutting down HTTP server...")
+		zap.L().Info("Shutting down HTTP server...")
 		if err := srv.Shutdown(ctx); err != nil {
-			log.Printf("Error shutting down server: %v\n", err)
+			zap.L().Error("Error shutting down server", zap.Error(err))
 		} else {
-			log.Println("HTTP server shut down gracefully.")
+			zap.L().Info("HTTP server shut down gracefully.")
 		}
 
 		for boardID, webhookID := range webhookIDs {
 			if err := trelloClient.DeleteWebhook(webhookID); err != nil {
-				log.Printf("Error deleting webhook for board %s: %v\n", boardID, err)
+				zap.L().Error("Error deleting webhook for board", zap.String("boardID", boardID), zap.Error(err))
 			} else {
-				log.Printf("Successfully deleted webhook for board %s\n", boardID)
+				zap.L().Info("Successfully deleted webhook for board", zap.String("boardID", boardID))
 			}
 		}
 
 		if sqlDB != nil {
 			if err := sqlDB.Close(); err != nil {
-				log.Printf("Error closing database: %v\n", err)
+				zap.L().Error("Error closing database", zap.Error(err))
 			} else {
-				log.Println("Database connection closed.")
+				zap.L().Info("Database connection closed.")
 			}
 		}
 		close(done)
@@ -138,11 +170,11 @@ func main() {
 		// if a second signal is caught, exit immediately
 		go func() {
 			<-sigCh
-			log.Println("Second interrupt signal received. Exiting immediately.")
+			zap.L().Info("Second interrupt signal received. Exiting immediately.")
 			os.Exit(1)
 		}()
 	}()
 
 	<-done
-	log.Println("Exiting...")
+	zap.L().Info("Exiting...")
 }

@@ -3,13 +3,13 @@ package api
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/chxlky/trello-gcal-sync/integrations"
 	"github.com/chxlky/trello-gcal-sync/internal/models"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -21,14 +21,14 @@ type Handler struct {
 func (h *Handler) TrelloWebhookHandler(c *gin.Context) {
 	// Trello sends a HEAD request to validate the webhook endpoint upon creation
 	if c.Request.Method != http.MethodPost {
-		log.Println("Received non-POST request to webhook endpoint; responding with 200 OK")
+		zap.L().Debug("Received non-POST request to webhook endpoint; responding with 200 OK")
 		c.Status(http.StatusOK)
 		return
 	}
 
 	var payload models.TrelloWebhookPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
-		log.Printf("Could not bind JSON payload - likely an empty validation POST: %v\n", err)
+		zap.L().Error("Could not bind JSON payload - likely an empty validation POST", zap.Error(err))
 		// Respond with 200 OK to satisfy Trello's validation, even if the payload is empty
 		c.Status(http.StatusOK)
 		return
@@ -37,29 +37,29 @@ func (h *Handler) TrelloWebhookHandler(c *gin.Context) {
 	action := payload.Action
 	card := action.Data.Card
 
-	log.Printf("Received Trello webhook: action type=%s, card ID=%s\n", action.Type, card.ID)
+	zap.L().Debug("Received Trello webhook", zap.String("actionType", action.Type), zap.String("cardID", card.ID))
 
 	if err := h.processCardUpdate(payload); err != nil {
-		log.Printf("Error processing card update: %v", err)
+		zap.L().Error("Error processing card update", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process webhook"})
 		return
 	}
 
-	log.Printf("Successfully processed card %s", card.ID)
+	zap.L().Info("Successfully processed card", zap.String("cardID", card.ID))
 	c.JSON(http.StatusOK, gin.H{"message": "Event processed successfully"})
 }
 
 // processCardUpdate orchestrates the main sync logic for a card update
 func (h *Handler) processCardUpdate(payload models.TrelloWebhookPayload) error {
 	if payload.Action.Type != "updateCard" {
-		log.Println("Action type is not 'updateCard', no action taken")
+		zap.L().Debug("Action type is not 'updateCard', no action taken")
 		return nil // Not an error, just nothing to do
 	}
 
 	incomingCardData := payload.Action.Data.Card
 
 	if incomingCardData.ID == "" {
-		log.Printf("incoming card data does not contain an ID, skipping sync\n")
+		zap.L().Debug("Incoming card data does not contain an ID, skipping sync")
 		return nil
 	}
 
@@ -73,34 +73,34 @@ func (h *Handler) processCardUpdate(payload models.TrelloWebhookPayload) error {
 	}
 
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		log.Printf("Card %s not found in database; creating new record\n", incomingCardData.ID)
+		zap.L().Info("Card not found in database; creating new record", zap.String("cardID", incomingCardData.ID))
 	}
 
 	// Handle archiving
 	wasArchived := card.Archived
 	if incomingCardData.Closed {
 		if !wasArchived {
-			log.Printf("Card %s (%s) has been archived\n", incomingCardData.ID, incomingCardData.Name)
+			zap.L().Info("Card archived", zap.String("cardID", incomingCardData.ID), zap.String("cardName", incomingCardData.Name))
 		}
 		card.Archived = true
 
 		if card.EventID != "" {
 			if err := h.CalClient.DeleteEvent(card.EventID); err != nil {
-				log.Printf("Warning: failed to delete event from Google Calendar for archived card: %v\n", err)
+				zap.L().Warn("Failed to delete event from Google Calendar for archived card", zap.String("eventID", card.EventID), zap.Error(err))
 			}
 			// Clear the event ID since it's deleted
 			card.EventID = ""
 		}
 	} else {
 		if wasArchived {
-			log.Printf("Card %s (%s) has been unarchived\n", incomingCardData.ID, incomingCardData.Name)
+			zap.L().Info("Card unarchived", zap.String("cardID", incomingCardData.ID), zap.String("cardName", incomingCardData.Name))
 		}
 		card.Archived = false
 	}
 
 	// Skip sync for archived cards
 	if card.Archived {
-		log.Printf("Skipping further sync for archived card %s\n", incomingCardData.ID)
+		zap.L().Info("Skipping further sync for archived card", zap.String("cardID", incomingCardData.ID))
 	} else {
 		// Decide whether to sync an event or delete one based on the due date
 		if incomingCardData.Due != "" {
@@ -110,7 +110,7 @@ func (h *Handler) processCardUpdate(payload models.TrelloWebhookPayload) error {
 		} else {
 			if card.DueDate != nil && card.EventID == "" {
 				// Recreate event using DB due date
-				log.Printf("Card %s has due date in DB but no event, recreating event\n", card.ID)
+				zap.L().Info("Card has due date in DB but no event, recreating event", zap.String("cardID", card.ID))
 				// Create a copy of incoming with the DB due date
 				recreateIncoming := incomingCardData
 				recreateIncoming.Due = card.DueDate.Format(time.RFC3339)
@@ -118,7 +118,7 @@ func (h *Handler) processCardUpdate(payload models.TrelloWebhookPayload) error {
 					return err
 				}
 			} else if card.DueDate != nil && card.EventID != "" {
-				log.Printf("Card %s has due date in DB, keeping existing event\n", card.ID)
+				zap.L().Info("Card has due date in DB, keeping existing event", zap.String("cardID", card.ID))
 			} else {
 				if err := h.deleteCalendarEvent(&card); err != nil {
 					return err
@@ -136,7 +136,7 @@ func (h *Handler) processCardUpdate(payload models.TrelloWebhookPayload) error {
 
 func (h *Handler) syncCalendarEvent(card *models.Card, incoming models.TrelloCardData, boardName string, boardID string) error {
 	if card.Archived {
-		log.Printf("Skipping event sync for archived card %s\n", card.ID)
+		zap.L().Info("Skipping event sync for archived card", zap.String("cardID", card.ID))
 		return nil
 	}
 
@@ -163,21 +163,21 @@ func (h *Handler) syncCalendarEvent(card *models.Card, incoming models.TrelloCar
 
 	if card.EventID != "" {
 		// Update existing event
-		log.Printf("Due date updated for card %s; updating associated event %s\n", card.ID, card.EventID)
+		zap.L().Info("Due date updated for card; updating associated event", zap.String("cardID", card.ID), zap.String("eventID", card.EventID))
 		updatedEvent, err := h.CalClient.UpdateEvent(*card, card.EventID)
 		if err != nil {
 			return fmt.Errorf("failed to update event in Google Calendar: %w", err)
 		}
-		log.Printf("Successfully updated event %s for card %s\n", updatedEvent.Id, card.ID)
+		zap.L().Info("Successfully updated event for card", zap.String("eventID", updatedEvent.Id), zap.String("cardID", card.ID))
 		card.EventID = updatedEvent.Id
 	} else {
 		// Create new event
-		log.Printf("Due date set for card %s; creating new event in Google Calendar\n", card.ID)
+		zap.L().Info("Due date set for card; creating new event in Google Calendar", zap.String("cardID", card.ID))
 		createdEvent, err := h.CalClient.CreateEvent(*card)
 		if err != nil {
 			return fmt.Errorf("failed to create event in Google Calendar: %w", err)
 		}
-		log.Printf("Successfully created event %s for card %s\n", createdEvent.Id, card.ID)
+		zap.L().Info("Successfully created event for card", zap.String("eventID", createdEvent.Id), zap.String("cardID", card.ID))
 		card.EventID = createdEvent.Id
 	}
 	return nil
@@ -185,14 +185,14 @@ func (h *Handler) syncCalendarEvent(card *models.Card, incoming models.TrelloCar
 
 func (h *Handler) deleteCalendarEvent(card *models.Card) error {
 	if card.EventID == "" {
-		log.Printf("Due date removed for card %s, but no associated event found to delete\n", card.ID)
+		zap.L().Info("Due date removed for card but no associated event found to delete", zap.String("cardID", card.ID))
 		return nil // Nothing to do
 	}
 
-	log.Printf("Due date removed for card %s; deleting associated event %s\n", card.ID, card.EventID)
+	zap.L().Info("Due date removed for card; deleting associated event", zap.String("cardID", card.ID), zap.String("eventID", card.EventID))
 	if err := h.CalClient.DeleteEvent(card.EventID); err != nil {
 		// Log the error but don't block saving the state, as the event might already be gone
-		log.Printf("Warning: failed to delete event from Google Calendar: %v\n", err)
+		zap.L().Warn("Failed to delete event from Google Calendar", zap.String("eventID", card.EventID), zap.Error(err))
 	}
 
 	// Clear local record of the event

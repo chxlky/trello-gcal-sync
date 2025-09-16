@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 
 	"github.com/chxlky/trello-gcal-sync/internal/models"
 	"github.com/spf13/viper"
+	"go.uber.org/zap"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/googleapi"
@@ -115,7 +115,7 @@ func (c *CalendarClient) DeleteEvent(eventID string) error {
 	if err != nil {
 		// It's possible the event was already deleted, so we can choose to ignore "Not Found" errors
 		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 {
-			log.Printf("Event with ID %s not found in Google Calendar. Already deleted.\n", eventID)
+			zap.L().Info("Event not found in Google Calendar. Already deleted.", zap.String("eventID", eventID))
 			return nil
 		}
 		return fmt.Errorf("unable to delete event from Google Calendar: %w", err)

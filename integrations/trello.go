@@ -5,23 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
+
+	"go.uber.org/zap"
 )
 
 type TrelloClient struct {
-	Client *http.Client
-	APIKey string
-	APIToken string
+	Client      *http.Client
+	APIKey      string
+	APIToken    string
 	CallbackURL string
 }
 
 func NewTrelloClient(key, token, callbackURL string) *TrelloClient {
 	return &TrelloClient{
-		Client: &http.Client{},
-		APIKey: key,
-		APIToken: token,
+		Client:      &http.Client{},
+		APIKey:      key,
+		APIToken:    token,
 		CallbackURL: callbackURL,
 	}
 }
@@ -61,7 +62,9 @@ func (tc *TrelloClient) RegisterWebhook(boardId string) (string, error) {
 		return "", fmt.Errorf("failed to decode Trello response: %v", err)
 	}
 
-	log.Printf("Successfully registered webhook with ID: %s for board ID: %s\n", webhook.ID, boardId)
+	zap.L().Info("Successfully registered webhook",
+		zap.String("webhookID", webhook.ID),
+		zap.String("boardID", boardId))
 
 	return webhook.ID, nil
 }
@@ -77,7 +80,7 @@ func (tc *TrelloClient) DeleteWebhook(webhookID string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create delete request: %v", err)
 	}
-	
+
 	resp, err := tc.Client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to send delete request: %v", err)
@@ -89,7 +92,8 @@ func (tc *TrelloClient) DeleteWebhook(webhookID string) error {
 		return fmt.Errorf("trello API returned non-200 status: %s, body: %s", resp.Status, string(bodyBytes))
 	}
 
-	log.Printf("Successfully deleted webhook with ID: %s\n", webhookID)
+	zap.L().Info("Successfully deleted webhook",
+		zap.String("webhookID", webhookID))
 
 	return nil
 }
