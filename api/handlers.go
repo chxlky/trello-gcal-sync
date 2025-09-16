@@ -57,6 +57,8 @@ func (h *Handler) processCardUpdate(payload models.TrelloWebhookPayload) error {
 	}
 
 	incomingCardData := payload.Action.Data.Card
+	boardName := payload.Action.Data.Board.Name
+	boardID := payload.Action.Data.Board.ID
 	var card models.Card
 
 	err := h.DB.First(&card, "id = ?", incomingCardData.ID).Error
@@ -66,7 +68,7 @@ func (h *Handler) processCardUpdate(payload models.TrelloWebhookPayload) error {
 
 	// Decide whether to sync an event or delete one based on the due date
 	if incomingCardData.Due != "" {
-		if err := h.syncCalendarEvent(&card, incomingCardData); err != nil {
+		if err := h.syncCalendarEvent(&card, incomingCardData, boardName, boardID); err != nil {
 			return err
 		}
 	} else {
@@ -82,17 +84,27 @@ func (h *Handler) processCardUpdate(payload models.TrelloWebhookPayload) error {
 	return nil
 }
 
-func (h *Handler) syncCalendarEvent(card *models.Card, incoming models.TrelloCardData) error {
+func (h *Handler) syncCalendarEvent(card *models.Card, incoming models.TrelloCardData, boardName string, boardID string) error {
 	newDueDate, err := time.Parse(time.RFC3339, incoming.Due)
 	if err != nil {
 		return fmt.Errorf("invalid due date format: %w", err)
 	}
 
+	var boardPrefix string
+	if boardName != "" {
+		runes := []rune(boardName)
+		boardPrefix = string(runes[0])
+	} else {
+		boardPrefix = ""
+	}
+	prefixedName := fmt.Sprintf("[%s] %s", boardPrefix, incoming.Name)
+
 	// Update card details from the incoming payload
 	card.ID = incoming.ID
-	card.Name = incoming.Name
+	card.Name = prefixedName
 	card.DueDate = &newDueDate
 	card.URL = fmt.Sprintf("https://trello.com/c/%s", incoming.ShortLink)
+	card.BoardID = boardID
 
 	if card.EventID != "" {
 		// Update existing event

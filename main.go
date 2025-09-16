@@ -76,14 +76,21 @@ func main() {
 		viper.GetString("trello.callback_url"),
 	)
 
-	log.Println("Registering Trello webhook...")
-
-	boardId := viper.GetString("trello.board_id")
-	webhookID, err := trelloClient.RegisterWebhook(boardId)
-	if err != nil {
-		log.Fatalf("FATAL: Failed to register webhook on startup: %v", err)
+	var boardIDs []string
+	if err := viper.UnmarshalKey("trello.board_ids", &boardIDs); err != nil || len(boardIDs) == 0 {
+		log.Fatalf("FATAL: trello.board_ids is not configured properly: %v", err)
 	}
-	log.Printf("Successfully registered webhook with ID: %s\n", webhookID)
+
+	log.Println("Registering Trello webhook for boards: ", boardIDs)
+
+	webhookIDs := make(map[string]string)
+	for _, boardId := range boardIDs {
+		webhookID, err := trelloClient.RegisterWebhook(boardId)
+		if err != nil {
+			log.Fatalf("FATAL: Failed to register webhook on startup for board %s: %v", boardId, err)
+		}
+		webhookIDs[boardId] = webhookID
+	}
 
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -104,11 +111,12 @@ func main() {
 			log.Println("HTTP server shut down gracefully.")
 		}
 
-		delErr := trelloClient.DeleteWebhook(webhookID)
-		if delErr != nil {
-			log.Printf("Error deleting webhook: %v\n", delErr)
-		} else {
-			log.Printf("Successfully deleted webhook with ID: %s\n", webhookID)
+		for boardID, webhookID := range webhookIDs {
+			if err := trelloClient.DeleteWebhook(webhookID); err != nil {
+				log.Printf("Error deleting webhook for board %s: %v\n", boardID, err)
+			} else {
+				log.Printf("Successfully deleted webhook for board %s\n", boardID)
+			}
 		}
 
 		if sqlDB != nil {

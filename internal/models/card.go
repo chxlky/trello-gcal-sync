@@ -7,6 +7,7 @@ type Card struct {
 	Name      string
 	DueDate   *time.Time
 	URL       string
+	BoardID   string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	EventID   string // Google Calendar Event ID
