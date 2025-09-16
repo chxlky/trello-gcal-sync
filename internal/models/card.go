@@ -9,4 +9,5 @@ type Card struct {
 	URL       string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	EventID   string // Google Calendar Event ID
 }

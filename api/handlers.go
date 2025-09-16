@@ -35,41 +35,87 @@ func (h *Handler) TrelloWebhookHandler(c *gin.Context) {
 	}
 
 	action := payload.Action
-	cardData := action.Data.Card
-	log.Printf("Received Trello webhook: action type=%s, card ID=%s\n", action.Type, cardData.ID)
+	incomingCardData := action.Data.Card
+	log.Printf("Received Trello webhook: action type=%s, card ID=%s\n", action.Type, incomingCardData.ID)
 
-	if action.Type == "updateCard" && cardData.Due != "" {
-		dueDate, err := time.Parse(time.RFC3339, cardData.Due)
-		if err != nil {
-			log.Printf("Error parsing due date '%s': %v\n", cardData.Due, err)
+	if action.Type != "updateCard" {
+		c.JSON(http.StatusOK, gin.H{"message": "No action taken"})
+		return
+	}
+
+	var existingCard models.Card
+	err := h.DB.First(&existingCard, "id = ?", incomingCardData.ID).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		log.Printf("Error querying database: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database query failed"})
+		return
+	}
+
+	if incomingCardData.Due == "" {
+		// Due date was removed - delete event
+		if existingCard.EventID != "" {
+			log.Printf("Due date removed for card %s; deleting associated event %s\n", existingCard.ID, existingCard.EventID)
+			if err := h.CalClient.DeleteEvent(existingCard.EventID); err != nil {
+				log.Printf("Error deleting event from Google Calendar: %v\n", err)
+			}
+			existingCard.EventID = ""
+		}
+
+		existingCard.DueDate = nil
+		existingCard.Name = incomingCardData.Name
+		existingCard.URL = fmt.Sprintf("https://trello.com/c/%s", incomingCardData.ShortLink)
+		if existingCard.ID == "" {
+			existingCard.ID = incomingCardData.ID
+		}
+
+	} else {
+		// Due date was added or changed - create or update event
+		newDueDate, parseErr := time.Parse(time.RFC3339, incomingCardData.Due)
+		if parseErr != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid due date format"})
 			return
 		}
 
-		card := models.Card{
-			ID:      cardData.ID,
-			Name:    cardData.Name,
-			DueDate: &dueDate,
-			URL:     fmt.Sprintf("https://trello.com/c/%s", cardData.ShortLink),
+		cardToSync := models.Card{
+			ID:      incomingCardData.ID,
+			Name:    incomingCardData.Name,
+			DueDate: &newDueDate,
+			URL:     fmt.Sprintf("https://trello.com/c/%s", incomingCardData.ShortLink),
 		}
 
-		if result := h.DB.Save(&card); result.Error != nil {
-			log.Printf("Error saving card to database: %v\n", result.Error)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save card"})
-			return
-		}
-		log.Printf("Card saved/updated: ID=%s, Name=%s, DueDate=%s\n", card.ID, card.Name, card.DueDate)
-
-		event, err := h.CalClient.CreateEventFromCard(card)
-		if err != nil {
-			log.Printf("Error creating calendar event from card: %v\n", err)
+		if existingCard.EventID != "" {
+			// Update existing event
+			log.Printf("Due date updated for card %s; updating associated event %s\n", cardToSync.ID, existingCard.EventID)
+			updatedEvent, err := h.CalClient.UpdateEvent(cardToSync, existingCard.EventID)
+			if err != nil {
+				log.Printf("Error updating event in Google Calendar: %v\n", err)
+			} else {
+				log.Printf("Successfully updated event %s for card %s\n", updatedEvent.Id, cardToSync.ID)
+				cardToSync.EventID = updatedEvent.Id
+			}
 		} else {
-			log.Printf("Created calendar event: ID=%s, Summary=%s, Link=%s\n", event.Id, event.Summary, event.HtmlLink)
+			// Create new event
+			log.Printf("Due date set for card %s; creating new event in Google Calendar\n", cardToSync.ID)
+			createdEvent, err := h.CalClient.CreateEvent(cardToSync)
+			if err != nil {
+				log.Printf("Error creating event in Google Calendar: %v\n", err)
+			} else {
+				log.Printf("Successfully created event %s for card %s\n", createdEvent.Id, cardToSync.ID)
+				cardToSync.EventID = createdEvent.Id
+			}
 		}
 
-		c.JSON(http.StatusOK, gin.H{"message": "Card saved/updated successfully"})
+		// Update local card record
+		existingCard = cardToSync
+	}
+
+	// Save all changes back to our database.
+	if err := h.DB.Save(&existingCard).Error; err != nil {
+		log.Printf("Error saving final card state to database: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save card"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "No action taken"})
+	log.Printf("Successfully processed card %s.", existingCard.ID)
+	c.JSON(http.StatusOK, gin.H{"message": "Event processed successfully"})
 }
