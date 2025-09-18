@@ -80,6 +80,7 @@ func main() {
 	apiHandler := &api.Handler{
 		DB:        db,
 		CalClient: calClient,
+		Workers:   make(chan struct{}, 10), // Limit to 10 concurrent workers
 	}
 	apiGroup := router.Group("/api")
 	{
@@ -133,6 +134,8 @@ func main() {
 
 	cleanup := func(reason string) {
 		zap.L().Info("Shutdown initiated", zap.String("reason", reason))
+
+		close(apiHandler.Workers) // Close the channel to stop accepting new work
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

@@ -16,6 +16,7 @@ import (
 type Handler struct {
 	DB        *gorm.DB
 	CalClient *integrations.CalendarClient
+	Workers   chan struct{}
 }
 
 func (h *Handler) TrelloWebhookHandler(c *gin.Context) {
@@ -39,14 +40,20 @@ func (h *Handler) TrelloWebhookHandler(c *gin.Context) {
 
 	zap.L().Debug("Received Trello webhook", zap.String("actionType", action.Type), zap.String("cardID", card.ID))
 
-	if err := h.processCardUpdate(payload); err != nil {
-		zap.L().Error("Error processing card update", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process webhook"})
-		return
-	}
+	// Acquire a worker slot
+	h.Workers <- struct{}{}
+	go func() {
+		defer func() { <-h.Workers }() // Release the worker slot when done
 
-	zap.L().Info("Successfully processed card", zap.String("cardID", card.ID))
-	c.JSON(http.StatusOK, gin.H{"message": "Event processed successfully"})
+		if err := h.processCardUpdate(payload); err != nil {
+			zap.L().Error("Error processing card update", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process webhook"})
+			return
+		}
+
+		zap.L().Info("Successfully processed card", zap.String("cardID", card.ID))
+	}()
+	c.JSON(http.StatusOK, gin.H{"message": "Event received, processing asynchronously"})
 }
 
 // processCardUpdate orchestrates the main sync logic for a card update
