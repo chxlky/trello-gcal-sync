@@ -69,7 +69,7 @@ func main() {
 
 	calClient, err := integrations.NewCalendarClient()
 	if err != nil {
-		zap.L().Fatal("Failed to initialize Google Calendar client", zap.Error(err))
+		zap.L().Fatal("Failed to initialise Google Calendar client", zap.Error(err))
 	}
 	zap.L().Info("Successfully authenticated with Google Calendar API.")
 
@@ -85,6 +85,7 @@ func main() {
 	{
 		apiGroup.POST("/trello-webhook", apiHandler.TrelloWebhookHandler)
 		apiGroup.HEAD("/trello-webhook", apiHandler.TrelloWebhookHandler)
+		apiGroup.GET("/health", apiHandler.HealthCheckHandler)
 	}
 
 	srv := &http.Server{

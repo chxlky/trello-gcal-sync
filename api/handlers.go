@@ -200,3 +200,21 @@ func (h *Handler) deleteCalendarEvent(card *models.Card) error {
 	card.DueDate = nil
 	return nil
 }
+
+func (h *Handler) HealthCheckHandler(c *gin.Context) {
+	// Check database connectivity
+	if err := h.DB.Exec("SELECT 1").Error; err != nil {
+		zap.L().Error("Health check failed: database not reachable", zap.Error(err))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unhealthy", "error": "database"})
+	}
+
+	// Check Google Calendar client
+	if h.CalClient == nil {
+		zap.L().Error("Health check failed: Google Calendar client not initialised")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unhealthy", "error": "google calendar client"})
+		return
+	}
+
+	zap.L().Debug("Health check passed")
+	c.JSON(http.StatusOK, gin.H{"status": "healthy"})
+}
