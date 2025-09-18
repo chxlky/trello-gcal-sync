@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/avast/retry-go"
 	"github.com/chxlky/trello-gcal-sync/internal/models"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
@@ -65,7 +66,26 @@ func (c *CalendarClient) CreateEvent(card models.Card) (*calendar.Event, error) 
 		},
 	}
 
-	createdEvent, err := c.service.Events.Insert(calendarID, event).Do()
+	var createdEvent *calendar.Event
+	err := retry.Do(
+		func() error {
+			var err error
+			createdEvent, err = c.service.Events.Insert(calendarID, event).Do()
+			if err != nil {
+				if gerr, ok := err.(*googleapi.Error); ok && gerr.Code >= 500 {
+					return err
+				}
+				return retry.Unrecoverable(err)
+			}
+			return nil
+		},
+		retry.Attempts(3),
+		retry.DelayType(retry.BackOffDelay),
+		retry.OnRetry(func(n uint, err error) {
+			zap.L().Warn("Retrying Google Calendar CreateEvent", zap.Uint("attempt", n+1), zap.Error(err))
+		}),
+	)
+
 	if err != nil {
 		return nil, fmt.Errorf("unable to create event in Google Calendar: %w", err)
 	}
@@ -97,7 +117,26 @@ func (c *CalendarClient) UpdateEvent(card models.Card, eventID string) (*calenda
 		Date: card.DueDate.AddDate(0, 0, 1).Format("2006-01-02"), // all-day event ends the next day
 	}
 
-	updatedEvent, err := c.service.Events.Update(calendarID, event.Id, event).Do()
+	var updatedEvent *calendar.Event
+	err = retry.Do(
+		func() error {
+			var err error
+			updatedEvent, err = c.service.Events.Update(calendarID, event.Id, event).Do()
+			if err != nil {
+				if gerr, ok := err.(*googleapi.Error); ok && gerr.Code >= 500 {
+					return err // Retry on 5xx errors
+				}
+				return retry.Unrecoverable(err) // Don't retry on other errors
+			}
+			return nil
+		},
+		retry.Attempts(3),
+		retry.DelayType(retry.BackOffDelay),
+		retry.OnRetry(func(n uint, err error) {
+			zap.L().Warn("Retrying Google Calendar UpdateEvent", zap.Uint("attempt", n+1), zap.Error(err))
+		}),
+	)
+
 	if err != nil {
 		return nil, fmt.Errorf("unable to update event in Google Calendar: %w", err)
 	}
@@ -111,7 +150,30 @@ func (c *CalendarClient) DeleteEvent(eventID string) error {
 		return fmt.Errorf("google calendar ID is not configured")
 	}
 
-	err := c.service.Events.Delete(calendarID, eventID).Do()
+	err := retry.Do(
+		func() error {
+			err := c.service.Events.Delete(calendarID, eventID).Do()
+			if err != nil {
+				if gerr, ok := err.(*googleapi.Error); ok {
+					if gerr.Code == 404 {
+						return retry.Unrecoverable(err) // Don't retry if the event is not found
+					}
+					if gerr.Code >= 500 {
+						return err // Retry on server errors
+					}
+					return retry.Unrecoverable(err) // Don't retry on other errors
+				}
+				return nil
+			}
+			return nil
+		},
+		retry.Attempts(3),
+		retry.DelayType(retry.BackOffDelay),
+		retry.OnRetry(func(n uint, err error) {
+			zap.L().Warn("Retrying Google Calendar DeleteEvent", zap.Uint("attempt", n+1), zap.Error(err))
+		}),
+	)
+
 	if err != nil {
 		// It's possible the event was already deleted, so we can choose to ignore "Not Found" errors
 		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 {

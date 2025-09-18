@@ -13,6 +13,7 @@ require (
 	cloud.google.com/go/auth v0.16.5 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.8.0 // indirect
+	github.com/avast/retry-go v3.0.0+incompatible // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/gin-contrib/zap v1.1.5 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
